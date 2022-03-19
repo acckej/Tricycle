@@ -2,36 +2,38 @@
 #include <EEPROM.h>
 #include <GyverPWM.h>
 #include <GyverTimers.h>
-#include <GyverEncoder.h>
 #include <GyverButton.h>
-#include <AnalogKey.h>
 #include "Definitions.h"
+#include "AS5600.h"
 
-volatile Mode _mode = IDLE;
-volatile unsigned long _currentSpeed = 0;
-volatile unsigned long _speedChangeStep = 0;
-volatile PowerState _powerState = POW3;
-volatile BatteryState _batteryState = THREE;
+AMS_5600 ams5600;
 
-volatile int _currentThrottle;
-volatile boolean _state0, _lastState, _turnFlag;
+volatile enum Mode current_mode = IDLE;
+volatile unsigned long current_speed = 0;
+volatile unsigned long speed_change_step = 0;
+volatile enum BatteryState battery_state = THREE;
+volatile enum PowerState power_state = POW3;
 
-volatile unsigned long _battBlinkMillis = 0;
-volatile unsigned long _powBlinkMillis = 0;
-volatile bool _battBlinkLow = false;
-volatile bool _powBlinkLow = false;
+volatile int current_throttle;
+int initial_throttle = 0;
 
-volatile unsigned long _currentMaxSpeed = POWER_MODE3 * SPEED_COEFFICIENT;
+volatile unsigned long batt_blink_millis = 0;
+volatile unsigned long overload_start_millis = 0;
+volatile unsigned long pow_blink_millis = 0;
+volatile bool batt_blink_low = false;
+volatile bool pow_blink_low = false;
+
+volatile unsigned long current_max_speed = POWER_MODE3 * SPEED_COEFFICIENT;
 
 GButton butt1(BTN_ONE_PIN);
 GButton butt2(BTN_TWO_PIN);
 
 void setup()
 {
-	Timer1.setPeriod(MAIN_TIMER_INTERVAL * MILLISECONDS_COEFFICIENT);
-	Timer1.enableISR();
+	//Timer1.setPeriod(MAIN_TIMER_INTERVAL * MILLISECONDS_COEFFICIENT);
+	//Timer1.enableISR();
 
-	//Serial.begin(9600);
+	Serial.begin(9600);
 
 	pinMode(MOTOR_PIN, OUTPUT);
 	pinMode(PLED_PIN0, OUTPUT);
@@ -50,20 +52,23 @@ void setup()
 	butt2.setType(HIGH_PULL);
 
 	butt1.setDirection(NORM_OPEN);
-	butt2.setDirection(NORM_OPEN);
+	butt2.setDirection(NORM_OPEN);	
 
-	attachInterrupt(0, EncoderInterrupt, CHANGE);
+	//InitEeprom();
 
-	InitEeprom();
+	PWM_frequency(MOTOR_PIN, 20000, CORRECT_PWM);
 
-	PWM_frequency(MOTOR_PIN, 2000, CORRECT_PWM);
+	Wire.begin();
+
+	initial_throttle = CalculateCurrentThrottle();	
 }
 
-void loop()
+auto loop() -> void
 {
 	CheckCurrent();
-	CheckVoltage();
-	CheckUi();
+
+	//CheckVoltage();
+	//CheckUi();
 
 	/*char* buf = "                                  ";	
 	sprintf(buf, "%d %lu\n", _currentThrottle, _currentSpeed);
@@ -73,188 +78,245 @@ void loop()
 	digitalWrite(PLED_PIN1, HIGH);
 	digitalWrite(PLED_PIN2, HIGH);*/
 
-	//digitalWrite(MOTOR_PIN, HIGH);
+	UpdateCurrentThrottle();
 
-	//SetMotorPower(255 / MAX_THROTTLE_POS * _currentThrottle * SPEED_COEFFICIENT);
+	auto thr = 255.0 / MAX_THROTTLE_POS * current_throttle;
 
-	/*auto mil = millis();
+	PWM_set(MOTOR_PIN, static_cast<unsigned>(thr));	
 
-	if(mil > 20000)
+	if(thr < 100)
 	{
-		SetMotorPower(255 * SPEED_COEFFICIENT);
+		ShowPowerState(POW1);
+	} else if(thr >= 100 && thr < 240)
+	{
+		ShowPowerState(POW2);
+	} else
+	{
+		ShowPowerState(POW3);
 	}
-	else if(mil > 15000)
-	{
-		SetMotorPower(128 * SPEED_COEFFICIENT);
-	}
-	else if(mil > 10000)
-	{
-		SetMotorPower(12 * SPEED_COEFFICIENT);
-	}
-	else if(mil > 5000)
-	{
-		SetMotorPower(2 * SPEED_COEFFICIENT);
-	}*/
 
+	/*Serial.println(String(initial_throttle));
+	Serial.print(" ");
+	Serial.print(String(current_throttle));
+	Serial.print(" ");
+	Serial.println(String(thr));	
+	delay(100);*/
 }
 
-void EncoderInterrupt()
+int CalculateCurrentThrottle()
 {
-	_state0 = bitRead(PIND, ENCODER_PIN_A);
-	if (_state0 != _lastState)
+	const auto newAngle = ams5600.getRawAngle();
+	
+	/* Raw data reports 0 - 4095 segments, which is 0.087 of a degree */
+	const double retVal = newAngle * 0.087;	
+	return round(retVal);
+}
+
+void UpdateCurrentThrottle()
+{
+	if(current_mode == HALT)
 	{
-#if (ENC_TYPE == 1)
-		_turnFlag = !_turnFlag;
-		if (turnFlag)
-			_currentThrottle += (bitRead(PIND, ENCODER_PIN_B) != _lastState) ? -1 : 1;
-#else
-		_currentThrottle += (bitRead(PIND, ENCODER_PIN_B) != _lastState) ? -1 : 1;
-#endif
-		_lastState = _state0;
+		current_throttle = MIN_THROTTLE_POS;
+		return;
 	}
 
-	if (_currentThrottle <= 0)
+	auto curr = CalculateCurrentThrottle();
+
+	if (curr <= initial_throttle)
 	{
-		_currentThrottle = 0;
+		current_throttle = MIN_THROTTLE_POS;
+		return;
 	}
-	else if (_currentThrottle >= MAX_THROTTLE_POS)
+
+	curr = curr - initial_throttle;
+
+	if(curr < THROTTLE_OFFSET)
 	{
-		_currentThrottle = MAX_THROTTLE_POS;
+		current_throttle = MIN_THROTTLE_POS;
+		return;
 	}
+
+	if (curr > MAX_THROTTLE_POS)
+	{
+		curr = MAX_THROTTLE_POS;
+	}
+
+	current_throttle = curr;
 }
 
 ISR(TIMER1_A)
 {	
-	if (_mode == HALT)
+	if (current_mode == HALT)
 	{		
 		SetMotorPower(0);
-		_speedChangeStep = 0;
-		_currentSpeed = 0;
+		speed_change_step = 0;
+		current_speed = 0;
 		return;
 	}
 
 	const auto throttle = GetThrottlePos();
 	const auto thSpd = CalculateThrottleSpeed(throttle);	
 
-	if (thSpd < _currentSpeed)
+	if (thSpd < current_speed)
 	{
-		_mode = DECEL;
-		SetSpeedDifference(_currentSpeed - thSpd, _mode, thSpd);
+		current_mode = DECEL;
+		SetSpeedDifference(current_speed - thSpd, current_mode, thSpd);
 	}
-	else if (thSpd == _currentSpeed)
+	else if (thSpd == current_speed)
 	{
-		if (_speedChangeStep > 0)
+		if (speed_change_step > 0)
 		{
-			_speedChangeStep--;
-			const auto transitionPeriodMax = _mode == ACCEL ? ACCEL_PERIOD : DECEL_PERIOD;
-			ChangeSpeed(_mode, transitionPeriodMax, thSpd);
+			speed_change_step--;
+			const auto transition_period_max = current_mode == ACCEL ? ACCEL_PERIOD : DECEL_PERIOD;
+			ChangeSpeed(current_mode, transition_period_max, thSpd);
 		}
 		else
 		{
 			if (thSpd == 0)
 			{
-				_mode = IDLE;
+				current_mode = IDLE;
 				SetMotorPower(0);
 				return;
 			}
 
-			_mode = GOING;
+			current_mode = GOING;
 		}
 
-		SetMotorPower(_currentSpeed);
+		SetMotorPower(current_speed);
 	}
 	else
 	{
-		_mode = ACCEL;
-		SetSpeedDifference(thSpd - _currentSpeed, _mode, thSpd);
+		current_mode = ACCEL;
+		SetSpeedDifference(thSpd - current_speed, current_mode, thSpd);
 	}
 }
 
-void CheckVoltage()
+auto CheckVoltage() -> void
 {
 	const auto volt = GetVoltage();
 
-	const bool halt = _mode == IDLE || _mode == HALT ?
+	const bool halt = current_mode == IDLE || current_mode == HALT ?
 		                  volt < MIN_VOLTAGE_IDLE :
 		                  volt < MIN_VOLTAGE_GOING;
 
 	if(halt)
 	{		
 		Timer1.stop();
-		_mode = HALT;
+		current_mode = HALT;
 		SetMotorPower(0);
-		_batteryState = CUTOFF;
+		battery_state = CUTOFF;
 	}
-	else if(_mode == IDLE || _mode == HALT)
+	else if(current_mode == IDLE || current_mode == HALT)
 	{
-		_batteryState = GetBatteryState(volt);
+		battery_state = GetBatteryState(volt);
 	}	
 
-	ShowBatteryState(_batteryState);
+	ShowBatteryState(battery_state);
 }
 
-void CheckCurrent()
+auto CheckCurrent() -> void
 {
-	const auto curr = GetCurrent();
-
-	if (curr > MAX_CURRENT)
+	if(current_mode == HALT)
 	{
-		Timer1.stop();
-		_mode = HALT;
-		SetMotorPower(0);		
-		_powerState = OVERLOAD;		
+		return;
 	}
 
-	ShowPowerState(_powerState);
-}
+	const double curr = GetCurrent();
 
-unsigned long CalculateThrottleSpeed(int throttlePos)
-{
-	const auto dSpeed = _currentMaxSpeed / MAX_THROTTLE_POS;
-	return dSpeed * throttlePos;
-}
-
-void SetSpeedDifference(unsigned long dSpeed, Mode mode, unsigned long throttleSpeed)
-{
-	const auto transitionPeriodMax = mode == ACCEL ? ACCEL_PERIOD : DECEL_PERIOD;
-	const auto transitionSpeed = _currentMaxSpeed / transitionPeriodMax;
-	const auto transitionTime = transitionSpeed == 0 ? 0 : dSpeed / transitionSpeed;
-	const auto numberOfTicks = transitionTime / MAIN_TIMER_INTERVAL;
-
-	_speedChangeStep = numberOfTicks;
-
-	ChangeSpeed(mode, transitionPeriodMax, throttleSpeed);
-	SetMotorPower(_currentSpeed);
-}
-
-void ChangeSpeed(Mode mode, unsigned long transitionPeriodMax, unsigned long throttleSpeed)
-{
-	const auto speedIncrement = _currentMaxSpeed / (transitionPeriodMax / MAIN_TIMER_INTERVAL);	
-	
-	if (mode == ACCEL)
+	if (curr < 5)
 	{
-		_currentSpeed += speedIncrement; //current > throttle 
-		if (_currentSpeed > throttleSpeed)
+		ShowBatteryState(ONE);
+	}
+	else if (curr < 10 && curr > 5)
+	{
+		ShowBatteryState(TWO);
+	}
+	else if (curr > 10)
+	{
+		ShowBatteryState(THREE);
+	}
+
+	/*if (curr > MAX_PEAK_CURRENT)
+	{
+		Timer1.stop();
+		current_mode = HALT;
+		SetMotorPower(0);
+		power_state = OVERLOAD_PEAK;
+	}
+	else if (curr > MAX_CONT_CURRENT)
+	{
+		auto currTime = millis();
+
+		if (overload_start_millis == 0)
 		{
-			_currentSpeed = throttleSpeed;
+			overload_start_millis = currTime;
+		}
+		else if (currTime - overload_start_millis > OVERLOAD_DURATION)
+		{
+			overload_start_millis = 0;
+			Timer1.stop();
+			current_mode = HALT;
+			SetMotorPower(0);
+			power_state = OVERLOAD;
 		}
 	}
 	else
 	{
-		if (_currentSpeed < speedIncrement)
+		overload_start_millis = 0;
+	}*/
+
+	ShowPowerState(power_state);
+}
+
+unsigned long CalculateThrottleSpeed(int throttlePos)
+{
+	const auto dSpeed = current_max_speed / MAX_THROTTLE_POS;
+	return dSpeed * throttlePos;
+}
+
+void SetSpeedDifference(unsigned long dSpeed, enum Mode mode, unsigned long throttleSpeed)
+{
+	const auto transitionPeriodMax = mode == ACCEL ? ACCEL_PERIOD : DECEL_PERIOD;
+	const auto transitionSpeed = current_max_speed / transitionPeriodMax;
+	const auto transitionTime = transitionSpeed == 0 ? 0 : dSpeed / transitionSpeed;
+	const auto numberOfTicks = transitionTime / MAIN_TIMER_INTERVAL;
+
+	speed_change_step = numberOfTicks;
+
+	ChangeSpeed(mode, transitionPeriodMax, throttleSpeed);
+	SetMotorPower(current_speed);
+}
+
+void ChangeSpeed(enum Mode mode, unsigned long transitionPeriodMax, unsigned long throttleSpeed)
+{
+	const auto speedIncrement = current_max_speed / (transitionPeriodMax / MAIN_TIMER_INTERVAL);	
+	
+	if (mode == ACCEL)
+	{
+		current_speed += speedIncrement; //current > throttle 
+		if (current_speed > throttleSpeed)
 		{
-			_currentSpeed = 0;
+			current_speed = throttleSpeed;
+		}
+	}
+	else
+	{
+		if (current_speed < speedIncrement)
+		{
+			current_speed = 0;
 		}
 		else
 		{
-			_currentSpeed -= speedIncrement;
+			current_speed -= speedIncrement;
 		}		
 	}	
 }
 
 void SetMotorPower(unsigned long speed)
 {	
-	PWM_set(MOTOR_PIN, speed <= 0 ? 0 : speed / SPEED_COEFFICIENT);
+	PWM_set(MOTOR_PIN, static_cast<unsigned>(static_cast<double>(speed) <= 0.0
+		                                         ? 0.0
+		                                         : static_cast<double>(speed) / static_cast<double>(SPEED_COEFFICIENT)));
 }
 
 void CheckUi()
@@ -279,74 +341,82 @@ void CheckUi()
 
 int GetThrottlePos()
 {
-	return _currentThrottle;
+	return current_throttle;
 }
 
 void InitEeprom()
 {
 	const auto flag = EEPROM.read(INIT_ADDRESS);
 
+	power_state = POW3;
+
 	if (flag == 0)
 	{
-		_powerState = (PowerState)EEPROM.read(FLAG_ADDRESS);
+		power_state = static_cast<PowerState>(EEPROM.read(FLAG_ADDRESS));
 		return;
 	}
 	
 	EEPROM.write(INIT_ADDRESS, 0);
-	EEPROM.write(FLAG_ADDRESS, _powerState);
+	EEPROM.write(FLAG_ADDRESS, power_state);
 }
 
 void SetPowerState(bool increment)
 {	
 	if(increment)
 	{
-		switch (_powerState)
+		switch (power_state)
 		{
 		case POW1:
-			_powerState = POW2;
+			power_state = POW2;
 			break;
 		case POW2:
-			_powerState = POW3;
+			power_state = POW3;
 			break;
 		case POW3:
 		case OVERLOAD:
-			break;
+		case OVERLOAD_PEAK:
+			break;		
 		}
 	}
 	else
 	{
-		switch (_powerState)
+		switch (power_state)
 		{
 		case POW3:
-			_powerState = POW2;
+			power_state = POW2;
 			break;
 		case POW2:
-			_powerState = POW1;
+			power_state = POW1;
 			break;
 		case POW1:
 		case OVERLOAD:
+		case OVERLOAD_PEAK:
 			break;
 		}
 	}
 
-	switch (_powerState)
+	switch (power_state)
 	{
 	case POW1:	
-		_currentMaxSpeed = POWER_MODE3 * SPEED_COEFFICIENT;	
+		current_max_speed = POWER_MODE3 * SPEED_COEFFICIENT;	
 		break;
 	case POW2:	
-		_currentMaxSpeed = POWER_MODE2 * SPEED_COEFFICIENT;	
+		current_max_speed = POWER_MODE2 * SPEED_COEFFICIENT;	
 		break;
 	case POW3:
-		_currentMaxSpeed = POWER_MODE1 * SPEED_COEFFICIENT;
+		current_max_speed = POWER_MODE1 * SPEED_COEFFICIENT;
 	case OVERLOAD:
-		_currentMaxSpeed = 0;		
+	case OVERLOAD_PEAK:
+		current_max_speed = 0;		
 	}
 
-	EEPROM.write(FLAG_ADDRESS, _powerState);	
+	if (power_state != OVERLOAD_PEAK && power_state != OVERLOAD)
+	{
+		EEPROM.write(FLAG_ADDRESS, power_state);
+	}
 }
 
-void ShowBatteryState(BatteryState state)
+void ShowBatteryState(enum BatteryState state)
 {
 	switch (state)
 	{
@@ -372,7 +442,7 @@ void ShowBatteryState(BatteryState state)
 	{
 		auto curr = millis();
 
-			if(_battBlinkLow)
+			if(batt_blink_low)
 			{
 				digitalWrite(BLED_PIN0, LOW);
 				digitalWrite(BLED_PIN1, LOW);
@@ -385,17 +455,17 @@ void ShowBatteryState(BatteryState state)
 				digitalWrite(BLED_PIN2, HIGH);				
 			}
 
-			if (curr - _battBlinkMillis >= LOW_BATTERY_BLINK_PERIOD)
+			if (curr - batt_blink_millis >= LOW_BATTERY_BLINK_PERIOD)
 			{
-				_battBlinkLow = !_battBlinkLow;
-				_battBlinkMillis = curr;
+				batt_blink_low = !batt_blink_low;
+				batt_blink_millis = curr;
 			}
 	}
 	break;
 	}
 }
 
-void ShowPowerState(PowerState state)
+void ShowPowerState(enum PowerState state)
 {
 	switch (state)
 	{
@@ -404,24 +474,47 @@ void ShowPowerState(PowerState state)
 		digitalWrite(PLED_PIN0, HIGH);
 		digitalWrite(PLED_PIN1, LOW);
 		digitalWrite(PLED_PIN2, LOW);
-	}break;
+	} break;
 	case POW2:
 	{
 		digitalWrite(PLED_PIN0, HIGH);
 		digitalWrite(PLED_PIN1, HIGH);
 		digitalWrite(PLED_PIN2, LOW);
-	}break;
+	} break;
 	case POW3:
 	{
 		digitalWrite(PLED_PIN0, HIGH);
 		digitalWrite(PLED_PIN1, HIGH);
 		digitalWrite(PLED_PIN2, HIGH);
-	}break;
+	} break;
 	case OVERLOAD:
 	{
 		auto curr = millis();
 
-		if (_powBlinkLow)
+		if (pow_blink_low)
+		{
+			digitalWrite(PLED_PIN0, LOW);
+			digitalWrite(PLED_PIN1, HIGH);
+			digitalWrite(PLED_PIN2, LOW);
+		}
+		else
+		{
+			digitalWrite(PLED_PIN0, HIGH);
+			digitalWrite(PLED_PIN1, LOW);
+			digitalWrite(PLED_PIN2, HIGH);
+		}
+
+		if (curr - pow_blink_millis >= OVERLOAD_BLINK_PERIOD)
+		{
+			pow_blink_low = !pow_blink_low;
+			pow_blink_millis = curr;
+		}
+	} break;
+	case OVERLOAD_PEAK:
+	{
+		auto curr = millis();
+
+		if (pow_blink_low)
 		{
 			digitalWrite(PLED_PIN0, LOW);
 			digitalWrite(PLED_PIN1, LOW);
@@ -434,21 +527,20 @@ void ShowPowerState(PowerState state)
 			digitalWrite(PLED_PIN2, HIGH);
 		}
 
-		if (curr - _powBlinkMillis >= OVERLOAD_BLINK_PERIOD)
+		if (curr - pow_blink_millis >= OVERLOAD_BLINK_PERIOD)
 		{
-			_powBlinkLow = !_powBlinkLow;
-			_powBlinkMillis = curr;
+			pow_blink_low = !pow_blink_low;
+			pow_blink_millis = curr;
 		}
-	}
-	break;
+	} break;
 	}
 }
 
-BatteryState GetBatteryState(double voltage)
+enum BatteryState GetBatteryState(double voltage)
 {
-	if (_batteryState == CUTOFF)
+	if (battery_state == CUTOFF)
 	{
-		return _batteryState;
+		return battery_state;
 	}
 
 	if (voltage <= BATT_THR_ONE)
