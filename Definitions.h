@@ -25,7 +25,7 @@
 #define THROTTLE_OFFSET 10
 
 #define MAIN_TIMER_INTERVAL (uint32_t)50
-#define ACCEL_PERIOD (uint32_t)2000
+#define ACCEL_PERIOD (uint32_t)1200
 #define DECEL_PERIOD (uint32_t)1001
 #define HOLD_TIMEOUT 2000
 
@@ -34,6 +34,7 @@
 #define POWER_MODE2 (uint32_t)153
 #define POWER_MODE3 (uint32_t)255
 #define MILLISECONDS_COEFFICIENT (uint32_t)1000
+#define PWM_FREQUENCY 20000
 
 #define MIN_VOLTAGE_IDLE 9.0
 #define MIN_VOLTAGE_GOING 7.0
@@ -108,6 +109,10 @@ void SetSpeedDifference(unsigned long dSpeed, enum Mode mode, unsigned long thro
 void ChangeSpeed(enum Mode mode, unsigned long transitionPeriodMax, unsigned long throttleSpeed);
 
 void CheckUi();
+
+void UpdateMaxSpeed();
+
+void Halt();
 
 void EncoderInterrupt();
 

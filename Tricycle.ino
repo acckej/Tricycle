@@ -30,10 +30,10 @@ GButton butt2(BTN_TWO_PIN);
 
 void setup()
 {
-	//Timer1.setPeriod(MAIN_TIMER_INTERVAL * MILLISECONDS_COEFFICIENT);
-	//Timer1.enableISR();
+	Timer1.setPeriod(MAIN_TIMER_INTERVAL * MILLISECONDS_COEFFICIENT);
+	Timer1.enableISR();
 
-	Serial.begin(9600);
+	//Serial.begin(9600);
 
 	pinMode(MOTOR_PIN, OUTPUT);
 	pinMode(PLED_PIN0, OUTPUT);
@@ -56,7 +56,7 @@ void setup()
 
 	//InitEeprom();
 
-	PWM_frequency(MOTOR_PIN, 20000, CORRECT_PWM);
+	PWM_frequency(MOTOR_PIN, PWM_FREQUENCY, CORRECT_PWM);
 
 	Wire.begin();
 
@@ -66,41 +66,10 @@ void setup()
 auto loop() -> void
 {
 	CheckCurrent();
+	CheckVoltage();
+	CheckUi();
 
-	//CheckVoltage();
-	//CheckUi();
-
-	/*char* buf = "                                  ";	
-	sprintf(buf, "%d %lu\n", _currentThrottle, _currentSpeed);
-	Serial.write(buf);*/
-
-	/*digitalWrite(PLED_PIN0, HIGH);
-	digitalWrite(PLED_PIN1, HIGH);
-	digitalWrite(PLED_PIN2, HIGH);*/
-
-	UpdateCurrentThrottle();
-
-	auto thr = 255.0 / MAX_THROTTLE_POS * current_throttle;
-
-	PWM_set(MOTOR_PIN, static_cast<unsigned>(thr));	
-
-	if(thr < 100)
-	{
-		ShowPowerState(POW1);
-	} else if(thr >= 100 && thr < 240)
-	{
-		ShowPowerState(POW2);
-	} else
-	{
-		ShowPowerState(POW3);
-	}
-
-	/*Serial.println(String(initial_throttle));
-	Serial.print(" ");
-	Serial.print(String(current_throttle));
-	Serial.print(" ");
-	Serial.println(String(thr));	
-	delay(100);*/
+	UpdateCurrentThrottle();	
 }
 
 int CalculateCurrentThrottle()
@@ -145,17 +114,14 @@ void UpdateCurrentThrottle()
 }
 
 ISR(TIMER1_A)
-{	
+{
 	if (current_mode == HALT)
-	{		
-		SetMotorPower(0);
-		speed_change_step = 0;
-		current_speed = 0;
+	{
 		return;
 	}
 
 	const auto throttle = GetThrottlePos();
-	const auto thSpd = CalculateThrottleSpeed(throttle);	
+	const auto thSpd = CalculateThrottleSpeed(throttle);
 
 	if (thSpd < current_speed)
 	{
@@ -166,7 +132,10 @@ ISR(TIMER1_A)
 	{
 		if (speed_change_step > 0)
 		{
-			speed_change_step--;
+			speed_change_step = speed_change_step <= 1
+				? 0
+				: speed_change_step - 1;
+
 			const auto transition_period_max = current_mode == ACCEL ? ACCEL_PERIOD : DECEL_PERIOD;
 			ChangeSpeed(current_mode, transition_period_max, thSpd);
 		}
@@ -174,6 +143,7 @@ ISR(TIMER1_A)
 		{
 			if (thSpd == 0)
 			{
+				speed_change_step = 0;
 				current_mode = IDLE;
 				SetMotorPower(0);
 				return;
@@ -191,6 +161,15 @@ ISR(TIMER1_A)
 	}
 }
 
+void Halt()
+{
+	Timer1.stop();
+	current_mode = HALT;
+	speed_change_step = 0;
+	current_speed = 0;
+	SetMotorPower(0);
+}
+
 auto CheckVoltage() -> void
 {
 	const auto volt = GetVoltage();
@@ -201,9 +180,7 @@ auto CheckVoltage() -> void
 
 	if(halt)
 	{		
-		Timer1.stop();
-		current_mode = HALT;
-		SetMotorPower(0);
+		Halt();
 		battery_state = CUTOFF;
 	}
 	else if(current_mode == IDLE || current_mode == HALT)
@@ -221,26 +198,11 @@ auto CheckCurrent() -> void
 		return;
 	}
 
-	const double curr = GetCurrent();
+	const double curr = GetCurrent();	
 
-	if (curr < 5)
+	if (curr > MAX_PEAK_CURRENT)
 	{
-		ShowBatteryState(ONE);
-	}
-	else if (curr < 10 && curr > 5)
-	{
-		ShowBatteryState(TWO);
-	}
-	else if (curr > 10)
-	{
-		ShowBatteryState(THREE);
-	}
-
-	/*if (curr > MAX_PEAK_CURRENT)
-	{
-		Timer1.stop();
-		current_mode = HALT;
-		SetMotorPower(0);
+		Halt();
 		power_state = OVERLOAD_PEAK;
 	}
 	else if (curr > MAX_CONT_CURRENT)
@@ -253,17 +215,15 @@ auto CheckCurrent() -> void
 		}
 		else if (currTime - overload_start_millis > OVERLOAD_DURATION)
 		{
-			overload_start_millis = 0;
-			Timer1.stop();
-			current_mode = HALT;
-			SetMotorPower(0);
+			Halt();
+			overload_start_millis = 0;			
 			power_state = OVERLOAD;
 		}
 	}
 	else
 	{
 		overload_start_millis = 0;
-	}*/
+	}
 
 	ShowPowerState(power_state);
 }
@@ -314,9 +274,9 @@ void ChangeSpeed(enum Mode mode, unsigned long transitionPeriodMax, unsigned lon
 
 void SetMotorPower(unsigned long speed)
 {	
-	PWM_set(MOTOR_PIN, static_cast<unsigned>(static_cast<double>(speed) <= 0.0
-		                                         ? 0.0
-		                                         : static_cast<double>(speed) / static_cast<double>(SPEED_COEFFICIENT)));
+	PWM_set(MOTOR_PIN, static_cast<unsigned>(speed <= 0
+		                                         ? 0
+		                                         : speed / SPEED_COEFFICIENT));
 }
 
 void CheckUi()
@@ -328,19 +288,19 @@ void CheckUi()
 	{
 	}	*/
 
-	if (butt1.isClick())
-	{
-		SetPowerState(false);		
-	}
-
 	if (butt2.isClick())
 	{
 		SetPowerState(true);		
 	}
+
+	if (butt1.isClick())
+	{
+		SetPowerState(false);
+	}
 }
 
 int GetThrottlePos()
-{
+{	
 	return current_throttle;
 }
 
@@ -348,11 +308,14 @@ void InitEeprom()
 {
 	const auto flag = EEPROM.read(INIT_ADDRESS);
 
-	power_state = POW3;
+	//power_state = POW3;
 
 	if (flag == 0)
 	{
 		power_state = static_cast<PowerState>(EEPROM.read(FLAG_ADDRESS));
+
+		UpdateMaxSpeed();
+
 		return;
 	}
 	
@@ -395,24 +358,34 @@ void SetPowerState(bool increment)
 		}
 	}
 
-	switch (power_state)
-	{
-	case POW1:	
-		current_max_speed = POWER_MODE3 * SPEED_COEFFICIENT;	
-		break;
-	case POW2:	
-		current_max_speed = POWER_MODE2 * SPEED_COEFFICIENT;	
-		break;
-	case POW3:
-		current_max_speed = POWER_MODE1 * SPEED_COEFFICIENT;
-	case OVERLOAD:
-	case OVERLOAD_PEAK:
-		current_max_speed = 0;		
-	}
+	UpdateMaxSpeed();
+
+	current_speed = 0;
+	speed_change_step = 0;
+	current_mode = IDLE;
 
 	if (power_state != OVERLOAD_PEAK && power_state != OVERLOAD)
 	{
 		EEPROM.write(FLAG_ADDRESS, power_state);
+	}
+}
+
+void UpdateMaxSpeed()
+{
+	switch (power_state)
+	{
+	case POW1:
+		current_max_speed = POWER_MODE1 * SPEED_COEFFICIENT;
+		break;
+	case POW2:
+		current_max_speed = POWER_MODE2 * SPEED_COEFFICIENT;
+		break;
+	case POW3:
+		current_max_speed = POWER_MODE3 * SPEED_COEFFICIENT;
+		break;
+	case OVERLOAD:
+	case OVERLOAD_PEAK:
+		current_max_speed = 0;
 	}
 }
 
