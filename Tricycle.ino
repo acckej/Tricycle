@@ -54,7 +54,7 @@ void setup()
 	butt1.setDirection(NORM_OPEN);
 	butt2.setDirection(NORM_OPEN);	
 
-	//InitEeprom();
+	InitEeprom();
 
 	PWM_frequency(MOTOR_PIN, PWM_FREQUENCY, CORRECT_PWM);
 
@@ -167,6 +167,9 @@ void Halt()
 	current_mode = HALT;
 	speed_change_step = 0;
 	current_speed = 0;
+	pow_blink_millis = 0;
+	batt_blink_millis = 0;
+
 	SetMotorPower(0);
 }
 
@@ -195,6 +198,7 @@ auto CheckCurrent() -> void
 {
 	if(current_mode == HALT)
 	{
+		ShowPowerState(power_state);
 		return;
 	}
 
@@ -306,9 +310,7 @@ int GetThrottlePos()
 
 void InitEeprom()
 {
-	const auto flag = EEPROM.read(INIT_ADDRESS);
-
-	//power_state = POW3;
+	const auto flag = EEPROM.read(INIT_ADDRESS);	
 
 	if (flag == 0)
 	{
@@ -324,7 +326,12 @@ void InitEeprom()
 }
 
 void SetPowerState(bool increment)
-{	
+{
+	/*if(power_state == OVERLOAD_PEAK || power_state == OVERLOAD)
+	{
+		return;
+	}*/
+
 	if(increment)
 	{
 		switch (power_state)
@@ -415,24 +422,24 @@ void ShowBatteryState(enum BatteryState state)
 	{
 		auto curr = millis();
 
-			if(batt_blink_low)
-			{
-				digitalWrite(BLED_PIN0, LOW);
-				digitalWrite(BLED_PIN1, LOW);
-				digitalWrite(BLED_PIN2, LOW);				
-			}
-			else
-			{
-				digitalWrite(BLED_PIN0, HIGH);
-				digitalWrite(BLED_PIN1, HIGH);
-				digitalWrite(BLED_PIN2, HIGH);				
-			}
+		if (batt_blink_low)
+		{
+			digitalWrite(BLED_PIN0, LOW);
+			digitalWrite(BLED_PIN1, LOW);
+			digitalWrite(BLED_PIN2, LOW);
+		}
+		else
+		{
+			digitalWrite(BLED_PIN0, HIGH);
+			digitalWrite(BLED_PIN1, HIGH);
+			digitalWrite(BLED_PIN2, HIGH);
+		}
 
-			if (curr - batt_blink_millis >= LOW_BATTERY_BLINK_PERIOD)
-			{
-				batt_blink_low = !batt_blink_low;
-				batt_blink_millis = curr;
-			}
+		if (batt_blink_millis == 0 || curr - batt_blink_millis >= LOW_BATTERY_BLINK_PERIOD)
+		{
+			batt_blink_low = !batt_blink_low;
+			batt_blink_millis = curr;
+		}
 	}
 	break;
 	}
@@ -477,7 +484,7 @@ void ShowPowerState(enum PowerState state)
 			digitalWrite(PLED_PIN2, HIGH);
 		}
 
-		if (curr - pow_blink_millis >= OVERLOAD_BLINK_PERIOD)
+		if (pow_blink_millis == 0 || curr - pow_blink_millis >= OVERLOAD_BLINK_PERIOD)
 		{
 			pow_blink_low = !pow_blink_low;
 			pow_blink_millis = curr;
@@ -500,7 +507,7 @@ void ShowPowerState(enum PowerState state)
 			digitalWrite(PLED_PIN2, HIGH);
 		}
 
-		if (curr - pow_blink_millis >= OVERLOAD_BLINK_PERIOD)
+		if (pow_blink_millis == 0 || curr - pow_blink_millis >= OVERLOAD_BLINK_PERIOD)
 		{
 			pow_blink_low = !pow_blink_low;
 			pow_blink_millis = curr;
