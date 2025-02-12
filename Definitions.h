@@ -26,8 +26,6 @@
 #define THROTTLE_OFFSET 10
 
 #define MAIN_TIMER_INTERVAL (uint32_t)50
-#define ACCEL_PERIOD (uint32_t)1200  //!!!!!!!!!
-#define DECEL_PERIOD (uint32_t)1001 //!!!!!!!!!!!
 #define HOLD_TIMEOUT 2000
 
 #define SPEED_COEFFICIENT (uint32_t)1000
@@ -61,9 +59,7 @@
 #define ANALOG_BIT_THRESHOLD 600
 
 enum Mode : byte
-{
-	ACCEL,
-	DECEL,
+{	
 	IDLE,
 	GOING,
 	HALT
@@ -101,6 +97,8 @@ void ShowPowerState(enum PowerState state);
 
 void CheckCurrent();
 
+void SetMotorMode();
+
 void UpdateCurrentThrottle();
 
 void CheckVoltage();
@@ -108,10 +106,6 @@ void CheckVoltage();
 void SetPowerState(bool increment);
 
 unsigned long CalculateThrottleSpeed(unsigned long throttlePos);
-
-void SetSpeedDifference(unsigned long dSpeed, enum Mode mode, unsigned long throttleSpeed);
-
-void ChangeSpeed(enum Mode mode, unsigned long transitionPeriodMax, unsigned long throttleSpeed);
 
 void CheckUi();
 

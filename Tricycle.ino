@@ -11,7 +11,6 @@ AMS_5600 ams5600;
 
 volatile enum Mode current_mode = IDLE;
 volatile unsigned long current_speed = 0;
-volatile unsigned long speed_change_step = 0;
 volatile enum BatteryState battery_state = THREE;
 volatile enum PowerState power_state = POW3;
 volatile enum PowerState power_state_save = POW3;
@@ -66,56 +65,22 @@ void setup()
 
 	initial_throttle = CalculateCurrentThrottle();
 
-	Serial.begin(9600);
+	//Serial.begin(9600);
 }
 
 auto loop() -> void
 {	
-	//CheckCurrent();
-	//CheckVoltage();
+	CheckCurrent();
+	CheckVoltage();
 	CheckUi();
 		
 	UpdateCurrentThrottle();	
-
-	//delay(100);
-
-	//SetMotorPower(255000);
 }
 
 int CalculateCurrentThrottle()
 {
 	auto newAngle = ams5600.getRawAngle();
-
-	/*if (millis() > 5000)
-	{
-		newAngle = 90;
-	}
-
-	if (millis() > 10000)
-	{
-		newAngle = 190;
-	}
-
-	if (millis() > 15000)
-	{
-		newAngle = 287;
-	}
-
-	if (millis() > 20000)
-	{
-		newAngle = 190;
-	}
-
-	if (millis() > 25000)
-	{
-		newAngle = 90;
-	}
-
-	if (millis() > 30000)
-	{
-		newAngle = 0;
-	}*/
-
+	
 	/* Raw data reports 0 - 4095 segments, which is 0.087 of a degree */
 	const double retVal = newAngle * 0.087;
 	auto result = round(retVal);
@@ -156,9 +121,9 @@ void UpdateCurrentThrottle()
 	current_throttle = curr;
 }
 
-ISR(TIMER1_A)
+void SetMotorMode()
 {
-	if (current_mode == HALT)
+	if (current_mode == HALT || current_throttle == MIN_THROTTLE_POS)
 	{
 		SetMotorPower(0);
 		return;
@@ -167,47 +132,18 @@ ISR(TIMER1_A)
 	const unsigned long throttle = GetThrottlePos();
 	const unsigned long thSpd = CalculateThrottleSpeed(throttle);
 
-	if (thSpd < current_speed || thSpd == 0)
-	{
-		current_mode = DECEL;
-		SetSpeedDifference(current_speed - thSpd, current_mode, thSpd);
-	}
-	else if (thSpd == current_speed)
-	{
-		if (speed_change_step >= 1)
-		{
-			speed_change_step -= 1;
+	SetMotorPower(thSpd);
+}
 
-			const unsigned long transition_period_max = current_mode == ACCEL ? ACCEL_PERIOD : DECEL_PERIOD;
-			ChangeSpeed(current_mode, transition_period_max, thSpd);
-		}
-		else
-		{
-			speed_change_step = 0;
-			if (thSpd == 0)
-			{				
-				current_mode = IDLE;
-				SetMotorPower(0);
-				return;
-			}
-			
-			current_mode = GOING;
-		}
-
-		SetMotorPower(current_speed);
-	}
-	else
-	{
-		current_mode = ACCEL;
-		SetSpeedDifference(thSpd - current_speed, current_mode, thSpd);
-	}
+ISR(TIMER1_A)
+{
+	SetMotorMode();
 }
 
 void Halt()
 {
 	Timer1.stop();
-	current_mode = HALT;
-	speed_change_step = 0;
+	current_mode = HALT;	
 	current_speed = 0;
 	pow_blink_millis = 0;
 	batt_blink_millis = 0;
@@ -285,74 +221,9 @@ unsigned long CalculateThrottleSpeed(unsigned long throttlePos)
 	return dSpeed * throttlePos;
 }
 
-void SetSpeedDifference(unsigned long dSpeed, enum Mode mode, unsigned long throttleSpeed)
-{
-	const auto transitionPeriodMax = mode == ACCEL ? ACCEL_PERIOD : DECEL_PERIOD;
-	const auto transitionSpeed = current_max_speed / transitionPeriodMax;
-	const auto transitionTime = transitionSpeed == 0 ? 0 : dSpeed / transitionSpeed;
-	const auto numberOfTicks = transitionTime / MAIN_TIMER_INTERVAL;
-
-	speed_change_step = numberOfTicks;
-
-	ChangeSpeed(mode, transitionPeriodMax, throttleSpeed);
-
-	Serial.print("__");
-	Serial.print(transitionPeriodMax);
-	Serial.print("__");
-	Serial.print(transitionSpeed);
-	Serial.print("__");
-	Serial.print(transitionTime);
-	Serial.print("__");
-	Serial.print(numberOfTicks);
-	Serial.print("__");
-	Serial.print(dSpeed);
-	Serial.print("__");
-	Serial.print(throttleSpeed);
-	Serial.print("__");
-	Serial.print(current_speed);
-	Serial.println();
-
-	SetMotorPower(current_speed);
-}
-
-void ChangeSpeed(enum Mode mode, unsigned long transitionPeriodMax, unsigned long throttleSpeed)
-{
-	const auto speedIncrement = current_max_speed / (transitionPeriodMax / MAIN_TIMER_INTERVAL);	
-	
-	if (mode == ACCEL)
-	{
-		current_speed += speedIncrement; //current > throttle		
-
-		if (current_speed > throttleSpeed)
-		{
-			current_speed = throttleSpeed;
-		}
-	}
-	else
-	{
-		if (current_speed < speedIncrement)
-		{
-			current_speed = 0;
-		}
-		else
-		{
-			current_speed -= speedIncrement;
-		}		
-	}
-
-	if (current_speed > current_max_speed)
-	{
-		current_speed = current_max_speed;
-	}
-}
 
 void SetMotorPower(unsigned long speed)
 {
-	//Serial.println("++");
-	//Serial.print(speed);
-	//Serial.print("++");
-	//Serial.println();
-
 	PWM_set(MOTOR_PIN, static_cast<unsigned>(speed <= 0
 		                                         ? 0
 		                                         : speed / SPEED_COEFFICIENT));
@@ -398,7 +269,7 @@ void CheckUi()
 
 unsigned long GetThrottlePos()
 {	
-	return (unsigned long)current_throttle;
+	return static_cast<unsigned long>(current_throttle);
 }
 
 void InitEeprom()
@@ -462,8 +333,7 @@ void SetPowerState(bool increment)
 
 	UpdateMaxSpeed();
 
-	current_speed = 0;
-	speed_change_step = 0;
+	current_speed = 0;	
 	current_mode = IDLE;
 
 	if (IsWorkingPowerState())
