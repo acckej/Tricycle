@@ -174,25 +174,23 @@ ISR(TIMER1_A)
 	}
 	else if (thSpd == current_speed)
 	{
-		if (speed_change_step > 0)
+		if (speed_change_step >= 1)
 		{
-			speed_change_step = speed_change_step <= 1
-				? 0
-				: speed_change_step - 1;
+			speed_change_step -= 1;
 
 			const unsigned long transition_period_max = current_mode == ACCEL ? ACCEL_PERIOD : DECEL_PERIOD;
 			ChangeSpeed(current_mode, transition_period_max, thSpd);
 		}
 		else
 		{
+			speed_change_step = 0;
 			if (thSpd == 0)
-			{
-				speed_change_step = 0;
+			{				
 				current_mode = IDLE;
 				SetMotorPower(0);
 				return;
 			}
-
+			
 			current_mode = GOING;
 		}
 
