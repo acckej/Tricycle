@@ -14,19 +14,20 @@
 #define BTN_TWO_PIN 5
 #define VOLTAGE_PIN A1
 
-#define ENCODER_PIN_A 2
-#define ENCODER_PIN_B 3 //9
 #define CURRENT_PIN A2
+
+#define D1 A7
+#define D2 A6
 
 #define ENC_TYPE 0
 
-#define MAX_THROTTLE_POS 35
+#define MAX_THROTTLE_POS 25
 #define MIN_THROTTLE_POS 0
 #define THROTTLE_OFFSET 10
 
 #define MAIN_TIMER_INTERVAL (uint32_t)50
-#define ACCEL_PERIOD (uint32_t)1200
-#define DECEL_PERIOD (uint32_t)1001
+#define ACCEL_PERIOD (uint32_t)1200  //!!!!!!!!!
+#define DECEL_PERIOD (uint32_t)1001 //!!!!!!!!!!!
 #define HOLD_TIMEOUT 2000
 
 #define SPEED_COEFFICIENT (uint32_t)1000
@@ -43,7 +44,7 @@
 #define MAX_PEAK_CURRENT 35.0f
 #define MAX_CONT_CURRENT 18.0f
 #define CURRENT_MIDDLE_POINT 2.5f
-#define CURRENT_COEFFICIENT 0.066f
+#define CURRENT_COEFFICIENT 0.158f //0.066f
 
 #define BATT_THR_THREE 11.9
 #define BATT_THR_TWO 10.7
@@ -51,10 +52,13 @@
 
 #define OVERLOAD_DURATION 4000
 #define OVERLOAD_BLINK_PERIOD 500
+#define RCHALT_BLINK_PERIOD 250
 #define LOW_BATTERY_BLINK_PERIOD 1000
 
 #define INIT_ADDRESS 0
 #define FLAG_ADDRESS 1
+
+#define ANALOG_BIT_THRESHOLD 600
 
 enum Mode : byte
 {
@@ -79,10 +83,11 @@ enum PowerState : byte
 	POW2 = 2,
 	POW3 = 3,
 	OVERLOAD = 4,
-	OVERLOAD_PEAK = 5
+	OVERLOAD_PEAK = 5,
+	RC_HALT = 6
 };
 
-int GetThrottlePos();
+unsigned long GetThrottlePos();
 
 double GetVoltage();
 
@@ -102,7 +107,7 @@ void CheckVoltage();
 
 void SetPowerState(bool increment);
 
-unsigned long CalculateThrottleSpeed(int throttlePos);
+unsigned long CalculateThrottleSpeed(unsigned long throttlePos);
 
 void SetSpeedDifference(unsigned long dSpeed, enum Mode mode, unsigned long throttleSpeed);
 
@@ -121,6 +126,16 @@ void InitEeprom();
 enum BatteryState GetBatteryState(double voltage);
 
 int CalculateCurrentThrottle();
+
+bool IsD1();
+
+bool IsD2();
+
+bool IsWorkingPowerState();
+
+double GetDoubleFromEeeprom(short address);
+
+void SaveDoubleToEeprom(double val, short address);
 
 
 

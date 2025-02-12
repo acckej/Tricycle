@@ -15,7 +15,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Tricycle.ino" />
     <None Include="src\arduino folders read me.txt">
       <Filter>Misc Files</Filter>
     </None>
@@ -35,5 +34,6 @@
     <ClCompile Include="AS5600.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Tricycle.ino" />
   </ItemGroup>
 </Project>

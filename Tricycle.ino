@@ -1,3 +1,4 @@
+#include <Boards.h>
 #include <Wire.h>
 #include <EEPROM.h>
 #include <GyverPWM.h>
@@ -13,6 +14,7 @@ volatile unsigned long current_speed = 0;
 volatile unsigned long speed_change_step = 0;
 volatile enum BatteryState battery_state = THREE;
 volatile enum PowerState power_state = POW3;
+volatile enum PowerState power_state_save = POW3;
 
 volatile int current_throttle;
 int initial_throttle = 0;
@@ -31,9 +33,7 @@ GButton butt2(BTN_TWO_PIN);
 void setup()
 {
 	Timer1.setPeriod(MAIN_TIMER_INTERVAL * MILLISECONDS_COEFFICIENT);
-	Timer1.enableISR();
-
-	//Serial.begin(9600);
+	Timer1.enableISR();	
 
 	pinMode(MOTOR_PIN, OUTPUT);
 	pinMode(PLED_PIN0, OUTPUT);
@@ -44,7 +44,11 @@ void setup()
 	pinMode(BLED_PIN2, OUTPUT);
 	pinMode(BTN_ONE_PIN, INPUT);
 	pinMode(BTN_TWO_PIN, INPUT);
+	pinMode(CURRENT_PIN, INPUT);
 
+	pinMode(D1, INPUT);
+	pinMode(D2, INPUT);
+	
 	butt1.setTimeout(HOLD_TIMEOUT);
 	butt2.setTimeout(HOLD_TIMEOUT);
 
@@ -60,25 +64,64 @@ void setup()
 
 	Wire.begin();
 
-	initial_throttle = CalculateCurrentThrottle();	
+	initial_throttle = CalculateCurrentThrottle();
+
+	Serial.begin(9600);
 }
 
 auto loop() -> void
-{
-	CheckCurrent();
-	CheckVoltage();
+{	
+	//CheckCurrent();
+	//CheckVoltage();
 	CheckUi();
-
+		
 	UpdateCurrentThrottle();	
+
+	//delay(100);
+
+	//SetMotorPower(255000);
 }
 
 int CalculateCurrentThrottle()
 {
-	const auto newAngle = ams5600.getRawAngle();
-	
+	auto newAngle = ams5600.getRawAngle();
+
+	/*if (millis() > 5000)
+	{
+		newAngle = 90;
+	}
+
+	if (millis() > 10000)
+	{
+		newAngle = 190;
+	}
+
+	if (millis() > 15000)
+	{
+		newAngle = 287;
+	}
+
+	if (millis() > 20000)
+	{
+		newAngle = 190;
+	}
+
+	if (millis() > 25000)
+	{
+		newAngle = 90;
+	}
+
+	if (millis() > 30000)
+	{
+		newAngle = 0;
+	}*/
+
 	/* Raw data reports 0 - 4095 segments, which is 0.087 of a degree */
-	const double retVal = newAngle * 0.087;	
-	return round(retVal);
+	const double retVal = newAngle * 0.087;
+	auto result = round(retVal);
+
+	
+	return result;
 }
 
 void UpdateCurrentThrottle()
@@ -117,13 +160,14 @@ ISR(TIMER1_A)
 {
 	if (current_mode == HALT)
 	{
+		SetMotorPower(0);
 		return;
 	}
 
-	const auto throttle = GetThrottlePos();
-	const auto thSpd = CalculateThrottleSpeed(throttle);
+	const unsigned long throttle = GetThrottlePos();
+	const unsigned long thSpd = CalculateThrottleSpeed(throttle);
 
-	if (thSpd < current_speed)
+	if (thSpd < current_speed || thSpd == 0)
 	{
 		current_mode = DECEL;
 		SetSpeedDifference(current_speed - thSpd, current_mode, thSpd);
@@ -136,7 +180,7 @@ ISR(TIMER1_A)
 				? 0
 				: speed_change_step - 1;
 
-			const auto transition_period_max = current_mode == ACCEL ? ACCEL_PERIOD : DECEL_PERIOD;
+			const unsigned long transition_period_max = current_mode == ACCEL ? ACCEL_PERIOD : DECEL_PERIOD;
 			ChangeSpeed(current_mode, transition_period_max, thSpd);
 		}
 		else
@@ -202,7 +246,7 @@ auto CheckCurrent() -> void
 		return;
 	}
 
-	const double curr = GetCurrent();	
+	const double curr = GetCurrent();
 
 	if (curr > MAX_PEAK_CURRENT)
 	{
@@ -220,7 +264,7 @@ auto CheckCurrent() -> void
 		else if (currTime - overload_start_millis > OVERLOAD_DURATION)
 		{
 			Halt();
-			overload_start_millis = 0;			
+			overload_start_millis = 0;
 			power_state = OVERLOAD;
 		}
 	}
@@ -232,8 +276,13 @@ auto CheckCurrent() -> void
 	ShowPowerState(power_state);
 }
 
-unsigned long CalculateThrottleSpeed(int throttlePos)
+unsigned long CalculateThrottleSpeed(unsigned long throttlePos)
 {
+	if(throttlePos == 0)
+	{
+		return 0;
+	}
+
 	const auto dSpeed = current_max_speed / MAX_THROTTLE_POS;
 	return dSpeed * throttlePos;
 }
@@ -248,6 +297,23 @@ void SetSpeedDifference(unsigned long dSpeed, enum Mode mode, unsigned long thro
 	speed_change_step = numberOfTicks;
 
 	ChangeSpeed(mode, transitionPeriodMax, throttleSpeed);
+
+	Serial.print("__");
+	Serial.print(transitionPeriodMax);
+	Serial.print("__");
+	Serial.print(transitionSpeed);
+	Serial.print("__");
+	Serial.print(transitionTime);
+	Serial.print("__");
+	Serial.print(numberOfTicks);
+	Serial.print("__");
+	Serial.print(dSpeed);
+	Serial.print("__");
+	Serial.print(throttleSpeed);
+	Serial.print("__");
+	Serial.print(current_speed);
+	Serial.println();
+
 	SetMotorPower(current_speed);
 }
 
@@ -257,7 +323,8 @@ void ChangeSpeed(enum Mode mode, unsigned long transitionPeriodMax, unsigned lon
 	
 	if (mode == ACCEL)
 	{
-		current_speed += speedIncrement; //current > throttle 
+		current_speed += speedIncrement; //current > throttle		
+
 		if (current_speed > throttleSpeed)
 		{
 			current_speed = throttleSpeed;
@@ -273,11 +340,21 @@ void ChangeSpeed(enum Mode mode, unsigned long transitionPeriodMax, unsigned lon
 		{
 			current_speed -= speedIncrement;
 		}		
-	}	
+	}
+
+	if (current_speed > current_max_speed)
+	{
+		current_speed = current_max_speed;
+	}
 }
 
 void SetMotorPower(unsigned long speed)
-{	
+{
+	//Serial.println("++");
+	//Serial.print(speed);
+	//Serial.print("++");
+	//Serial.println();
+
 	PWM_set(MOTOR_PIN, static_cast<unsigned>(speed <= 0
 		                                         ? 0
 		                                         : speed / SPEED_COEFFICIENT));
@@ -285,6 +362,24 @@ void SetMotorPower(unsigned long speed)
 
 void CheckUi()
 {
+	const auto state = IsWorkingPowerState();
+
+	if (state && IsD1())
+	{
+		Halt();
+		power_state_save = power_state;
+		power_state = RC_HALT;
+		return;
+	}
+
+	if (power_state == RC_HALT && IsD2())
+	{
+		power_state = power_state_save;
+		current_mode = IDLE;
+		Timer1.restart();
+		return;
+	}
+
 	butt1.tick();
 	butt2.tick();
 
@@ -294,7 +389,7 @@ void CheckUi()
 
 	if (butt2.isClick())
 	{
-		SetPowerState(true);		
+		SetPowerState(true);
 	}
 
 	if (butt1.isClick())
@@ -303,9 +398,9 @@ void CheckUi()
 	}
 }
 
-int GetThrottlePos()
+unsigned long GetThrottlePos()
 {	
-	return current_throttle;
+	return (unsigned long)current_throttle;
 }
 
 void InitEeprom()
@@ -345,6 +440,7 @@ void SetPowerState(bool increment)
 		case POW3:
 		case OVERLOAD:
 		case OVERLOAD_PEAK:
+		case RC_HALT:
 			break;		
 		}
 	}
@@ -361,6 +457,7 @@ void SetPowerState(bool increment)
 		case POW1:
 		case OVERLOAD:
 		case OVERLOAD_PEAK:
+		case RC_HALT:
 			break;
 		}
 	}
@@ -371,7 +468,7 @@ void SetPowerState(bool increment)
 	speed_change_step = 0;
 	current_mode = IDLE;
 
-	if (power_state != OVERLOAD_PEAK && power_state != OVERLOAD)
+	if (IsWorkingPowerState())
 	{
 		EEPROM.write(FLAG_ADDRESS, power_state);
 	}
@@ -392,6 +489,7 @@ void UpdateMaxSpeed()
 		break;
 	case OVERLOAD:
 	case OVERLOAD_PEAK:
+	case RC_HALT:
 		current_max_speed = 0;
 	}
 }
@@ -513,6 +611,27 @@ void ShowPowerState(enum PowerState state)
 			pow_blink_millis = curr;
 		}
 	} break;
+	case RC_HALT:
+	{
+		auto curr = millis();
+
+		if (pow_blink_low)
+		{
+			digitalWrite(PLED_PIN0, LOW);
+			digitalWrite(PLED_PIN1, LOW);
+			digitalWrite(PLED_PIN2, LOW);
+		}
+		else
+		{
+			digitalWrite(PLED_PIN1, HIGH);			
+		}
+
+		if (pow_blink_millis == 0 || curr - pow_blink_millis >= RCHALT_BLINK_PERIOD)
+		{
+			pow_blink_low = !pow_blink_low;
+			pow_blink_millis = curr;
+		}
+	} break;
 	}
 }
 
@@ -549,4 +668,44 @@ double GetCurrent()
 	const auto voltage = ANALOG_COEFFICIENT * static_cast<double>(curr);
 	const auto current = fabs(CURRENT_MIDDLE_POINT - voltage) / CURRENT_COEFFICIENT;
 	return current;
+}
+
+bool IsD1()
+{
+	auto res = analogRead(D1);
+	return res >= ANALOG_BIT_THRESHOLD;
+}
+
+bool IsD2()
+{
+	auto res = analogRead(D2);
+	return res >= ANALOG_BIT_THRESHOLD;
+}
+
+bool IsWorkingPowerState()
+{
+	return power_state == POW1 || power_state == POW2 || power_state == POW3;
+}
+
+double GetDoubleFromEeeprom(short address) 
+{
+	unsigned char temp[4];
+
+	temp[0] = EEPROM.read(address);
+	temp[1] = EEPROM.read(static_cast<short>(address + 1));
+	temp[2] = EEPROM.read(static_cast<short>(address + 2));
+	temp[3] = EEPROM.read(static_cast<short>(address + 3));
+
+	const auto result = *reinterpret_cast<double*>(temp);
+	return result;
+}
+
+void SaveDoubleToEeprom(double val, short address) 
+{
+	const auto value = reinterpret_cast<unsigned char*>(&val);
+
+	EEPROM.write(address, value[0]);
+	EEPROM.write(static_cast<short>(address + 1), value[1]);
+	EEPROM.write(static_cast<short>(address + 2), value[2]);
+	EEPROM.write(static_cast<short>(address + 3), value[3]);
 }
